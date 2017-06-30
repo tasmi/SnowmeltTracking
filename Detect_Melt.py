@@ -3,7 +3,7 @@ Detect_Melt.py
 
 Functions for determining the start and end of the snowmelt season from passive microwave data
 Author: Taylor Smith (tasmith@uni-potsdam.de)
-Date, v0: 20.1.2017
+Date, v1.0: 30.6.2017
 
 """
 
@@ -23,23 +23,43 @@ def daterangelist(start_date, end_date, skip):
         l = np.append(l, (start_date + datetime.timedelta(n)))
     return l.astype('datetime64')
     
-def Melt_Dates(XPGR, SWE, Tb37V, END):
+def Melt_Dates2(XPGR, SWE, Tb37V, END):
     """Classify the start and end of melt based upon XPGR, SWE, 37V PM data, and the long-term average end date.
-    For classifying the long-term average end date, use 'NULL' in place of END."""
+    For classifying the long-term average end date, use 'NULL' in place of END.
+    
+    Inputs: XPGR, SWE, Tb37V, END (or NULL for long-term mean dates)
+    Returns: Onset, End Date, quality flag (1 = good, 0 = unconfirmed melt onset), subpeak (either date of secondary peak or zero if no secondary peak)
+    """
     def start(XPGR):
         """Find the start date of melt from a given XPGR time series"""
         peaks = detect_peaks(XPGR.values) #Identify peaks in XPGR data
         aoi_sum = -100 #Set initial condition
+        w = 0 #Set a flag to check to make sure a peak is found
         for p in peaks:
             peak = XPGR.index[p]
-            aoi = XPGR[np.logical_and(XPGR.index < peak + pd.Timedelta('3 days'), XPGR.index > peak - pd.Timedelta('3 days'))] #Select values within 3 days
+            aoi = XPGR[np.logical_and(XPGR.index < peak + pd.Timedelta('2 days'), XPGR.index > peak - pd.Timedelta('2 days'))] #Select values within 5 day window
             if np.nanmean(aoi.values) > aoi_sum: 
                 aoi_sum = np.nanmean(aoi.values) #Replace the initial condition if the peak is higher/thicker
                 current_max = peak
+                w = 1 #Set the flag to say a peak has been found
+        if w == 0: #If current max is never assigned, return the yearly max instead
+            current_max = XPGR.idxmax()
+            
+        #Check if the peak is the only strong peak in a year
+        maxval = np.nanmax(XPGR.values[np.logical_and(XPGR.index < current_max + pd.Timedelta('5 days'), XPGR.index > current_max - pd.Timedelta('5 days'))]) #Max val around the chosen peak
+        subpeaks_possible = XPGR[np.logical_or(XPGR.index > current_max + pd.Timedelta('21 days'), XPGR.index < current_max - pd.Timedelta('21 days'))] #Only look for peaks more than 3 weeks away from the chosen peak
+        offset = 0.95 * maxval #Set the allowable offset to 5% of the max
+        subpeaks = subpeaks_possible[subpeaks_possible.values > offset] #Find possible secondary peaks
+        
+        flag = 1 #Set the default flag at good
+        if subpeaks.shape[0] > 2:
+            flag = 0 #If there are several other days above the max, call the melt onset unconfirmed
         try:
-            return current_max
+            subpeak = subpeaks.idxmax() #Try to return the highest subpeak, otherwise return a zero
         except:
-            return XPGR.idxmax() #If no peaks are above inital condition (error), return the date of yearly max XPGR
+            subpeak = 0
+                                
+        return current_max, flag, subpeak
     
     def end(Tb37V, SWE):
         """Find the end date of melt from given 37V and SWE time series"""
@@ -53,10 +73,12 @@ def Melt_Dates(XPGR, SWE, Tb37V, END):
                 current_max = peak
         RollSWE = SWE.copy() #Create a copy of the SWE data
         minswe = np.nanmin(SWE.values) #Find yearly minimum SWE
+        if np.isnan(np.nanmin(SWE.values)):
+            minswe = 0
         RollSWE[SWE.values <= minswe + 2] = 1 #Classify the SWE series into 1s and 0s based on distance from min swe
         RollSWE[SWE.values > minswe + 2] = 0
         rm = pd.rolling_sum(RollSWE, 5) #Calculate a rolling sum on a 5 day window
-        snow_clear = rm[rm.values >= 4].index.min() - pd.Timedelta('4 days') #Declare snow clearance if 4/5 days are 'snow clear'
+        snow_clear = rm[rm.values >= 4].index.min() - pd.Timedelta('4 days') #Declear snow clearance if 4/5 days are 'snow clear'
         try:
             return pd.Series((snow_clear, current_max)).min() #Choose the minimum between the SWE clearance and the Tb37 max dates
         except:
@@ -64,24 +86,30 @@ def Melt_Dates(XPGR, SWE, Tb37V, END):
                 return pd.Series(snow_clear, Tb37V.idxmax()).min() #If no data was returned from the Tb37 peak find, use the maximum yearly value instead
             except:
                 return snow_clear #If this also fails, use only the snow clearance date to determine date of snow melt off
-                
+          
     if END != 'NULL': #Main classifier
         endmelt = end(Tb37V, SWE)
         if np.abs((END - endmelt).days) > 60: #If there is high deviation from long-term average end dates, reclassify using a threshold
-            m = start(XPGR)
+            m, flag, subpeak = start(XPGR)
             endmelt = end(Tb37V[Tb37V.index > m], SWE[SWE.index > m])
-            m = start(XPGR[XPGR.index < endmelt])
+            try:
+                m, flag, subpeak = start(XPGR[XPGR.index < endmelt])
+            except:
+                pass
         else:
-            m = start(XPGR[XPGR.index < endmelt])
+            try:
+                m, flag, subpeak = start(XPGR[XPGR.index < endmelt])
+            except:
+                m, flag, subpeak = start(XPGR)
     elif END == 'NULL': #Initial use, when long-term average time series is used instead of yearly data
-        m = start(XPGR) #First guess of melt onset
+        m, flag, subpeak = start(XPGR) #First guess of melt onset
         endmelt = end(Tb37V, SWE) #First guess of melt end
         if m > endmelt: #If the date of melt onset is later than the date of melt end, reclassify the melt end date using only the data following the onset of melt
             endmelt = end(Tb37V[Tb37V.index > m], SWE[SWE.index > m])
         else:
-            m = start(XPGR[XPGR.index < endmelt]) #If the date of melt onset is before the date of melt end, reclassify the start of the melt season only with those data before the end of melt
-    
-    return m, endmelt
+            m, flag, subpeak = start(XPGR[XPGR.index < endmelt]) #If the date of melt onset is before the date of melt end, reclassify the start of the melt season only with those data before the end of melt
+
+    return m, endmelt, flag, subpeak
 
 def Average_Year(ser):
     """Generate an average, long-term year from a given pandas time series"""
@@ -154,7 +182,7 @@ def MeltDates(XPGR, SWE, Tb37):
     Av = Average_Year(XPGR) 
     AveSWE = Average_Year(SWE)
     Ave37 = Average_Year(Tb37)
-    avem, aveend = Melt_Dates(Av, AveSWE, Ave37, 'NULL')
+    avem, aveend, flag, subpeak = Melt_Dates(Av, AveSWE, Ave37, 'NULL')
     avem = pd.Timestamp(avem, tz='UTC') - pd.Timestamp('1999-10-01', tz='UTC') #Change the average date to a 'distance from Oct1 metric'
     aveend = pd.Timestamp(aveend, tz='UTC') - pd.Timestamp('1999-10-01', tz='UTC')
     
@@ -179,9 +207,9 @@ def MeltDates(XPGR, SWE, Tb37):
             START = avem + XPGR.index.min()
             END = aveend + XPGR.index.min()
             
-            m, endmelt = Melt_Dates(XPGR, SWE, Tb37V, END)
+            m, endmelt, flag, subpeak = Melt_Dates(XPGR, SWE, Tb37V, END)
             try:
-                if (endmelt - m).days > 0:
+                if (endmelt - m).days > 0 and flag == 1:
                     oct1 = pd.Timestamp('%s-10-01' % XPGR.index.year.min()) #Oct 1, start of water year
                     distfromstart = (m - oct1).days
                     distfromend = (endmelt - oct1).days
@@ -211,42 +239,49 @@ def MeltDates(XPGR, SWE, Tb37):
             del XPGR, Tb37V, SWE
     DictOut = {}
     for yr in range(1988,2017):
-        l1, l2, l3 = [], [], []
+        periods, starts, ends, flgs = [], [], [], [] #Now have the start, end, per and quality flag for each inst/year combo
         for i in insts:
             try:
                 data = Dict[i + str(yr)]
-                l1.append(data[0])
-                l2.append(data[1])
-                l3.append(data[2])
+                periods.append(data[0])
+                starts.append(data[1])
+                ends.append(data[2])
+                flgs.append(data[3])
             except:
                 pass
-        #If there are multiple values for one year (for example, coming from multiple sensors), average them if they are close, or throw out bad ones if some are 
-        #far from the long-term average
-        l_list = [l1, l2, l3]
-        indlist = [longavend - longavstart, longavstart, longavend]
+        #Range check
+        datelist = [periods, starts, ends]
+        indlist = [longavend - longavstart, longavstart, longavend] #Longterm average period, start, end
         outlist = []
         for i in [0,1,2]:
             try:
-                l = l_list[i]
-                if len(l) > 1:
+                l = np.array(datelist[i]).astype(float) #Grab all instrument values for a given year
+                if i != 2:
+                    if not np.nansum(flgs) == np.array(flgs).shape[0]: #If not every onset value is well-defined, throw them all out
+                        l = (np.nan,)*np.array(flgs).shape[0]
+                if len(l) > 1: #If there is more than one...
                     try:
-                        if np.nanmax(l) - np.nanmin(l) > 14:
-                            ind = indlist[i]
-                            finder = np.abs(np.array(l) - ind)
-                            l = l[np.where(finder == np.nanmin(finder))[0]]
+                        if np.nanmax(l) - np.nanmin(l) > 14: #If the spread between high quality dates is high...
+                            if l.shape[0] > 2:
+                                   l = np.nanmedian(l)
+                            else:
+                                if i == 2: #For the end dates use a different metric as they are better constrained
+                                    ind = indlist[i] #Pull the long-term average
+                                    finder = np.abs(np.array(l) - ind) #Get the absolute distance from the long-term average
+                                    l = l[np.where(finder == np.nanmin(finder))[0]][0] #Choose the date that is closest to the long-term average
+                                else:
+                                    l = np.nan
                         else:
-                            l = np.nanmean(l)
+                            l = l[0] #Choose the earlier date when onset dates and periods are close together
                     except:
-                        l = np.nanmean(l)
-                else:
-                    l = float(l[0])
+                        l = l[0] 
+                else: #If there is only one, return the value as a float
+                    l = float(l[0]) 
             except:
                 l = np.nan
             outlist.append(l)
         DictOut[str(yr)] = outlist
         
-    #return a dictionary with year: [start, end, period] pairs. 
-    return DictOut 
-    
+    return DictOut #Return the data in the format Dictionary[year] = [period, onset, end]
     
     
