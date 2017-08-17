@@ -1,9 +1,9 @@
 """
 Detect_Melt.py
 
-Functions for determining the start and end of the snowmelt season from passive microwave data
+Functions for determining the start (proxied by the maximum XPGR) and end of the snowmelt season from passive microwave data
 Author: Taylor Smith (tasmith@uni-potsdam.de)
-Date, v1.0: 30.6.2017
+Date, v1.1: 17.8.2017
 
 """
 
@@ -24,14 +24,14 @@ def daterangelist(start_date, end_date, skip):
     return l.astype('datetime64')
     
 def Melt_Dates2(XPGR, SWE, Tb37V, END):
-    """Classify the start and end of melt based upon XPGR, SWE, 37V PM data, and the long-term average end date.
+    """Classify the start (MXPGR) and end of melt based upon XPGR, SWE, 37V PM data, and the long-term average end date.
     For classifying the long-term average end date, use 'NULL' in place of END.
     
     Inputs: XPGR, SWE, Tb37V, END (or NULL for long-term mean dates)
     Returns: Onset, End Date, quality flag (1 = good, 0 = unconfirmed melt onset), subpeak (either date of secondary peak or zero if no secondary peak)
     """
     def start(XPGR):
-        """Find the start date of melt from a given XPGR time series"""
+        """Find the maximum XPGR / widest peak from a given XPGR time series"""
         peaks = detect_peaks(XPGR.values) #Identify peaks in XPGR data
         aoi_sum = -100 #Set initial condition
         w = 0 #Set a flag to check to make sure a peak is found
@@ -53,7 +53,7 @@ def Melt_Dates2(XPGR, SWE, Tb37V, END):
         
         flag = 1 #Set the default flag at good
         if subpeaks.shape[0] > 2:
-            flag = 0 #If there are several other days above the max, call the melt onset unconfirmed
+            flag = 0 #If there are several other days above the max, call the MXPGR unconfirmed
         try:
             subpeak = subpeaks.idxmax() #Try to return the highest subpeak, otherwise return a zero
         except:
@@ -102,9 +102,9 @@ def Melt_Dates2(XPGR, SWE, Tb37V, END):
             except:
                 m, flag, subpeak = start(XPGR)
     elif END == 'NULL': #Initial use, when long-term average time series is used instead of yearly data
-        m, flag, subpeak = start(XPGR) #First guess of melt onset
+        m, flag, subpeak = start(XPGR) #First guess of MXPGR
         endmelt = end(Tb37V, SWE) #First guess of melt end
-        if m > endmelt: #If the date of melt onset is later than the date of melt end, reclassify the melt end date using only the data following the onset of melt
+        if m > endmelt: #If the date of MXPGR is later than the date of melt end, reclassify the melt end date using only the data following the onset of melt
             endmelt = end(Tb37V[Tb37V.index > m], SWE[SWE.index > m])
         else:
             m, flag, subpeak = start(XPGR[XPGR.index < endmelt]) #If the date of melt onset is before the date of melt end, reclassify the start of the melt season only with those data before the end of melt
@@ -146,7 +146,7 @@ def WaterYear(series):
 def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     """
     Takes input of series, window_size, order, deriv, and rate
-    DEFAULT: savitzky_golay(SWE.values, 21, 1, deriv=0, rate=1)
+    DEFAULT: savitzky_golay(ser.values, 21, 1, deriv=0, rate=1)
     window_size must be ODD
     """
     from math import factorial
@@ -173,9 +173,9 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     
 #Example Usage:
 def MeltDates(XPGR, SWE, Tb37):
-    """ Example function to take XPGR, SWE, and Tb37V data to track the onset
-    and end of melt on a year-by-year basis.
-    Inputs are pandas Series obbjects.
+    """ Example function to take XPGR, SWE, and Tb37V data as pandas timeseries to track the
+    onset (MXPGR) and end of melt on a year-by-year basis.
+    Inputs are pandas Series objects.
     """
     Dict = {}
     #Compute Average Year
@@ -251,7 +251,7 @@ def MeltDates(XPGR, SWE, Tb37):
                 pass
         #Range check
         datelist = [periods, starts, ends]
-        indlist = [longavend - longavstart, longavstart, longavend] #Longterm average period, start, end
+        indlist = [longavend - longavstart, longavstart, longavend] #Longterm average period, MXPGR, end
         outlist = []
         for i in [0,1,2]:
             try:
@@ -282,6 +282,6 @@ def MeltDates(XPGR, SWE, Tb37):
             outlist.append(l)
         DictOut[str(yr)] = outlist
         
-    return DictOut #Return the data in the format Dictionary[year] = [period, onset, end]
+    return DictOut #Return the data in the format Dictionary[year] = [period, MXPGR, end]
     
     
